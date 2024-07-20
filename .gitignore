@@ -1,0 +1,12 @@
+.DS_Store
+/.idea/
+/*/__pycache__/*
+.env
+.env.production
+./venv/
+uwsgi.ini
+./db.sqlite3
+./build_and_push.sh
+./.env.build_config
+./saved_deck/
+./*.ppt

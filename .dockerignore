@@ -1,0 +1,42 @@
+# Development specific
+.git
+.gitignore
+*.map
+*.tsbuildinfo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE/Editors
+.vscode
+.idea
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# Logs
+logs
+*.log
+
+# UWSGI config
+uwsgi.ini
+
+# Env variables
+.env
+.env*
+.env.build_config
+
+# DB
+db.sqlite3
+
+# Docker confgi
+Dockerfile
+docker-compose*.yml
+
+# Build script
+build_and_push.sh
+
+# Generated Slides
+./saved_deck/
