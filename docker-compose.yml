@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  decksmith:
+    build:
+      context: .  # Adjust path relative to the docker-compose.yml
+    ports:
+      - "8502:8502"
+    environment:
+      -
+    env_file:
+      - .env
+    volumes:
+      -
+    command: streamlit run main.py

@@ -49,14 +49,41 @@ def main():
 
         generate_and_save_presentation(description, selected_template, output_path)
         st.success(f"Slide deck generated and saved to {output_path}")
-        with open(output_path, "rb") as file:
-            btn = st.download_button(
-                label="Download Slide Deck",
-                data=file,
-                file_name=output_path,
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-            )
 
+        with st.container():
+            if output_path:
+                with open(output_path, "rb") as file:
+                    btn = st.download_button(
+                        label="Download Slide Deck",
+                        data=file,
+                        file_name=output_path,
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    )
+    # Empty container to push the footer to the bottom
+    st.write("")
+    # Footer
+    with st.container():
+        st.markdown("---")
+        st.markdown(
+            """
+            <div style="text-align: center;">
+                <p>Created by <a href="https://jackhui.com.au" target="_blank">Jack Hui</a></p>
+                <p>Follow me on:
+                    <p>
+                    <a href="https://twitter.com/realjackhui" target="_blank">
+                        <img src="https://img.icons8.com/color/48/000000/twitter--v1.png" alt="Twitter" style="width: 30px; height: 30px;"/>
+                    </a>
+                    <a href="https://github.com/jack-jackhui" target="_blank">
+                        <img src="https://img.icons8.com/color/48/000000/github.png" alt="Github" style="width: 30px; height: 30px;"/>
+                    </a>
+                    <a href="https://linkedin.com/in/jackhui888" target="_blank">
+                        <img src="https://img.icons8.com/color/48/000000/linkedin.png" alt="LinkedIn" style="width: 30px; height: 30px;"/>
+                    </a>
+                </p>
+                </p>
+            </div>
+            """, unsafe_allow_html=True
+        )
 def display_typing_effect(response):
     response_placeholder = st.empty()
     typing_speed = 0.01  # seconds per character

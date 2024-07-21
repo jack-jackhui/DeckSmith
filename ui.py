@@ -20,27 +20,4 @@ def display_ui():
     st.header("Upload Documents")
     uploaded_files = st.file_uploader("Choose PDF or Word documents", accept_multiple_files=True, type=['pdf', 'docx'])
 
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        """
-        <div style="text-align: center;">
-            <p>Created by <a href="https://jackhui.com.au" target="_blank">Jack Hui</a></p>
-            <p>Follow me on:
-                <p>
-                <a href="https://twitter.com/realjackhui" target="_blank">
-                    <img src="https://img.icons8.com/color/48/000000/twitter--v1.png" alt="Twitter" style="width: 30px; height: 30px;"/>
-                </a>
-                <a href="https://github.com/jack-jackhui" target="_blank">
-                    <img src="https://img.icons8.com/color/48/000000/github.png" alt="Github" style="width: 30px; height: 30px;"/>
-                </a>
-                <a href="https://linkedin.com/in/jackhui888" target="_blank">
-                    <img src="https://img.icons8.com/color/48/000000/linkedin.png" alt="LinkedIn" style="width: 30px; height: 30px;"/>
-                </a>
-            </p>
-            </p>
-        </div>
-        """, unsafe_allow_html=True
-    )
-
     return user_input, description, uploaded_files, generate_button_pressed, template_options[selected_template]

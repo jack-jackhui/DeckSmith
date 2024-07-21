@@ -9,12 +9,14 @@ load_dotenv()
 
 DJANGO_BACKEND_URL = os.getenv("DJANGO_BACKEND_URL")
 API_KEY = os.getenv("API_KEY")
-
+FRONTENDURL = os.getenv("FRONTENDURL")
 def authenticate_session():
     """Authenticate the user session using token, session cookie, or API key."""
     token = st.session_state.get('auth_token', None)
     session_cookie = st.session_state.get('sessionid', None)
     api_key = st.session_state.get('api_key', None)
+
+    # For testing only
     #api_key = API_KEY
 
     # Debug: Print the current session states
@@ -51,7 +53,7 @@ def login_required(func):
             return func(*args, **kwargs)
         else:
             st.warning("You need to be logged in to access this page.")
-            login_url = "http://127.0.0.1:3000"  # Replace with your actual login page URL
+            login_url = FRONTENDURL  # Replace with your actual login page URL
             st.markdown(f"[Go to Login Page]({login_url})")
             st.stop()
     return wrapper
