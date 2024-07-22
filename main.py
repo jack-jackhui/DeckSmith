@@ -38,27 +38,28 @@ def main():
 
     # Generate slide deck
     if generate_button_pressed and description:
-        sanitized_description = re.sub(r'[^a-zA-Z0-9 \n\.]', '_', description)[:50]  # Limit filename length to 50 characters
+        with st.spinner("Generating slide deck..."):
+            sanitized_description = re.sub(r'[^a-zA-Z0-9 \n\.]', '_', description)[:50]  # Limit filename length to 50 characters
 
-        # Ensure the saved_deck folder exists
-        output_folder = "saved_deck"
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
+            # Ensure the saved_deck folder exists
+            output_folder = "saved_deck"
+            if not os.path.exists(output_folder):
+                os.makedirs(output_folder)
 
-        output_path = os.path.join(output_folder, f"{sanitized_description}.pptx")
+            output_path = os.path.join(output_folder, f"{sanitized_description}.pptx")
 
-        generate_and_save_presentation(description, selected_template, output_path)
-        st.success(f"Slide deck generated and saved to {output_path}")
+            generate_and_save_presentation(description, selected_template, output_path)
+            st.success(f"Slide deck generated and saved to {output_path}")
 
-        with st.container():
-            if output_path:
-                with open(output_path, "rb") as file:
-                    btn = st.download_button(
-                        label="Download Slide Deck",
-                        data=file,
-                        file_name=output_path,
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                    )
+            with st.container():
+                if output_path:
+                    with open(output_path, "rb") as file:
+                        btn = st.download_button(
+                            label="Download Slide Deck",
+                            data=file,
+                            file_name=output_path,
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                        )
     # Empty container to push the footer to the bottom
     st.write("")
     # Footer

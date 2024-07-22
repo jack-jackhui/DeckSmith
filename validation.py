@@ -16,7 +16,7 @@ def authenticate_session():
     session_cookie = st.session_state.get('sessionid', None)
     api_key = st.session_state.get('api_key', None)
 
-    # For testing only
+    # For testing only - uncomment this line to use hardcoded api key
     #api_key = API_KEY
 
     # Debug: Print the current session states
