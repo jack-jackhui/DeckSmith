@@ -29,8 +29,9 @@ def authenticate_session():
 
     if token:
         headers = {'Authorization': f'Token {token}'}
+        print("Auth Header is", headers)
         response = requests.get(f'{DJANGO_BACKEND_URL}/api/dj-rest-auth/user/', headers=headers)
-        #st.write(f"Token authentication response status: {response.status_code}")
+        print(f"Token authentication response status: {response.status_code}")
         if response.status_code == 200:
             return True
         else:
@@ -46,6 +47,7 @@ def authenticate_session():
 
     return False
 
+"""
 def login_required(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -57,32 +59,35 @@ def login_required(func):
             st.markdown(f"[Go to Login Page]({login_url})")
             st.stop()
     return wrapper
+"""
 
 def validate_credentials():
     token = None
     sessionid = None
     api_key = None
 
-    if st.query_params:
-        token = st.query_params.token
-        #sessionid = st.query_params.sessionid
-        #api_key = st.query_params.api_key
+    #print("Initial Query Params:", st.query_params)
+    # Check query parameters and set session state before validation
+    if st.session_state.get("auth_checked", None) is None:
+        #print("Query Parameters:", st.query_params)
+        if st.query_params:
+            token = st.query_params.token
+            sessionid = st.query_params.get('sessionid', [None])[0]
+            api_key = st.query_params.get('api_key', [None])[0]
 
-        # Debug: Print the query parameters
-        #st.write(f"Query params: {st.query_params}")
-        #st.write(f"Token from query params: {token}")
-        #st.write(f"Session ID from query params: {sessionid}")
-        #st.write(f"API key from query params: {api_key}")
+            # Debug: Print the query parameters
+            #print("Query params: ", st.query_params)
+            #print("Token from query params: ", token)
+            #st.write(f"Session ID from query params: {sessionid}")
+            #st.write(f"API key from query params: {api_key}")
 
-    if token:
-        st.session_state['auth_token'] = token
+        if token:
+            st.session_state['auth_token'] = token
+        if sessionid:
+            st.session_state['sessionid'] = sessionid
+        if api_key:
+            st.session_state['api_key'] = api_key
 
-    if sessionid:
-        st.session_state['sessionid'] = sessionid
-
-    if api_key:
-        st.session_state['api_key'] = api_key
+        st.session_state["auth_checked"] = True
 
     return authenticate_session()
-
-validate_credentials()
