@@ -1,4 +1,4 @@
-# CI Workflow - Basic Python
+# CI Workflow - Python Linting, Security, and Testing
 # Runs on every PR and push to main
 
 name: CI
@@ -9,7 +9,61 @@ on:
     branches: [main]
 
 jobs:
-  lint-and-test:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff mypy
+
+      - name: Lint with Ruff
+        run: |
+          ruff check . --output-format=github
+
+      - name: Type check with mypy
+        run: |
+          pip install types-requests
+          mypy --ignore-missing-imports --no-error-summary *.py || true
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Bandit
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit
+
+      - name: Run Bandit security scan
+        run: |
+          bandit -r . -x ./tests,./venv,./.venv -ll -ii -f json -o bandit-report.json || true
+          bandit -r . -x ./tests,./venv,./.venv -ll -ii
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+  test:
+    name: Test
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -35,12 +89,31 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff  # Fast Python linter
 
-      - name: Lint with Ruff
+      - name: Run pytest with coverage
         run: |
-          ruff check . --output-format=github || true  # Non-blocking for now
+          pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing --ignore=tests/__pycache__
+        env:
+          TOKENIZERS_PARALLELISM: false
 
-      - name: Check syntax errors
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.11'
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  syntax-check:
+    name: Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check Python syntax
         run: |
-          python -m py_compile $(find . -name "*.py" -not -path "./.venv/*" | head -20)
+          python -m py_compile $(find . -name "*.py" -not -path "./.venv/*" -not -path "./venv/*")

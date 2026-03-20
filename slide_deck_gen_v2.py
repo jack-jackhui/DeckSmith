@@ -1,22 +1,50 @@
-from langchain_openai import AzureChatOpenAI
+"""Slide deck generation module using Azure OpenAI."""
+
+import logging
 import os
+from typing import List, Optional, Tuple
+
 from dotenv import load_dotenv
-from pptx import Presentation, enum
-from pptx.util import Pt, Inches, Cm
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_PARAGRAPH_ALIGNMENT
+from langchain_openai import AzureChatOpenAI
+from openai import APIError, RateLimitError
 from PIL import Image
+from pptx import Presentation
+from pptx.util import Cm, Inches, Pt
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from constants import (
+    DEFAULT_FONT_SIZE,
+    EXAMPLES_COUNT,
+    IMAGE_RIGHT_MARGIN_CM,
+    IMAGE_TOP_CM,
+    MAX_RETRIES,
+    MAX_SLIDES,
+    PIXELS_TO_CM,
+    RECOMMENDATIONS_KEY_POINTS,
+    RETRY_INITIAL_WAIT,
+    RETRY_MAX_WAIT,
+    RETRY_MULTIPLIER,
+    SLIDE_HEIGHT_CM,
+    SLIDE_WIDTH_CM,
+    SLIDES_STRUCTURE,
+    SMALL_FONT_SIZE,
+)
 from image_generator import generate_cover
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Initialize the Azure OpenAI client
-azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
-azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-azure_openai_deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
-azure_openai_model_name = os.getenv("AZURE_OPENAI_MODEL_NAME")
+logger = logging.getLogger(__name__)
+
+azure_openai_api_key: Optional[str] = os.getenv("AZURE_OPENAI_API_KEY")
+azure_openai_endpoint: Optional[str] = os.getenv("AZURE_OPENAI_ENDPOINT")
+azure_openai_api_version: Optional[str] = os.getenv("AZURE_OPENAI_API_VERSION")
+azure_openai_deployment_name: Optional[str] = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+azure_openai_model_name: Optional[str] = os.getenv("AZURE_OPENAI_MODEL_NAME")
 
 llm = AzureChatOpenAI(
     api_key=azure_openai_api_key,
@@ -26,22 +54,7 @@ llm = AzureChatOpenAI(
     model_name=azure_openai_model_name
 )
 
-slides_structure = [
-    {"title": "Front Page"},
-    {"title": "Executive Summary"},
-    {"title": "Key Point 1"},
-    {"title": "Key Point 2"},
-    {"title": "Key Point 3"},
-    {"title": "Recommendations"},
-    {"title": "Conclusion"},
-    {"title": "Additional Examples"},
-    {"title": "Important Data"},
-    {"title": "Benefits"},
-    {"title": "Risks"},
-    {"title": "Final Conclusion"}
-]
-
-layout_mapping = {
+LAYOUT_MAPPING = {
     "title": 0,
     "section_header": 1,
     "title_and_body": 2,
@@ -55,8 +68,17 @@ layout_mapping = {
     "blank": 10
 }
 
-def remove_unwanted_slides(prs, indices_to_remove):
-    # Ensure the indices are sorted in descending order
+
+def remove_unwanted_slides(prs: Presentation, indices_to_remove: List[int]) -> Presentation:
+    """Remove slides at specified indices from the presentation.
+
+    Args:
+        prs: The PowerPoint presentation object.
+        indices_to_remove: List of slide indices to remove.
+
+    Returns:
+        The modified presentation object.
+    """
     indices_to_remove = sorted(indices_to_remove, reverse=True)
 
     for index in indices_to_remove:
@@ -67,16 +89,58 @@ def remove_unwanted_slides(prs, indices_to_remove):
     return prs
 
 
-def clear_existing_slides(prs, last_index_to_clear):
+def clear_existing_slides(prs: Presentation, last_index_to_clear: int) -> None:
+    """Clear all slides from the presentation.
+
+    Args:
+        prs: The PowerPoint presentation object.
+        last_index_to_clear: Unused parameter, kept for compatibility.
+    """
     while len(prs.slides) > 0:
-        # Remove the first slide until all are gone
-        # This ensures all associated files and relationships are also cleared
         xml_slides = prs.slides._sldIdLst
-        prs.part.drop_rel(xml_slides[0].rId)  # Drop relationship to clean up properly
+        prs.part.drop_rel(xml_slides[0].rId)
         del xml_slides[0]
 
-def generate_slide_content(description):
-    # Single prompt for generating the entire slide deck content
+
+@retry(
+    retry=retry_if_exception_type((RateLimitError, APIError)),
+    stop=stop_after_attempt(MAX_RETRIES),
+    wait=wait_exponential(multiplier=RETRY_MULTIPLIER, min=RETRY_INITIAL_WAIT, max=RETRY_MAX_WAIT),
+    before_sleep=lambda retry_state: logger.warning(
+        "Retrying LLM call (attempt %d/%d) after error: %s",
+        retry_state.attempt_number, MAX_RETRIES, retry_state.outcome.exception()
+    )
+)
+def invoke_llm(prompt: str) -> str:
+    """Invoke the LLM with retry logic for rate limiting and API errors.
+
+    Args:
+        prompt: The prompt to send to the LLM.
+
+    Returns:
+        The LLM response content.
+
+    Raises:
+        RateLimitError: If rate limit is exceeded after all retries.
+        APIError: If an API error occurs after all retries.
+    """
+    logger.debug("Invoking LLM with prompt length: %d", len(prompt))
+    response = llm.invoke(prompt)
+    return response.content.strip()
+
+
+def generate_slide_content(description: str) -> List[str]:
+    """Generate content for all slides based on the description.
+
+    Args:
+        description: The presentation description/topic.
+
+    Returns:
+        A list of content strings, one for each slide.
+
+    Raises:
+        ValueError: If generated content doesn't match expected slide count.
+    """
     prompt = (
         f"You are an expert in creating professional presentations in the style of McKinsey, BCG, or Bain (MBB). "
         f"Generate concise, impactful content for a PowerPoint presentation based on the following description:\n\n"
@@ -101,99 +165,111 @@ def generate_slide_content(description):
         "Do not write any comments other than actual contents of the slide."
     )
 
-    response = llm.invoke(prompt)
-    content = response.content.strip()
-    print(f"Generated Content:\n{content}\n")
+    content = invoke_llm(prompt)
+    logger.debug("Generated Content:\n%s\n", content)
 
-    # Split the content into separate slides based on the marker
     slides_content = content.split("[SLIDE]")
     for index, slide in enumerate(slides_content):
-        print(f"Content for Slide {index + 1}:\n{slide}\n")
+        logger.debug("Content for Slide %d:\n%s\n", index + 1, slide)
     slides_content = [slide.strip() for slide in slides_content if slide.strip()]
 
-    # Debug: Print the number of slides content generated
-    print(f"Number of slides content generated: {len(slides_content)}")
-    print(f"Expected number of slides: {len(slides_structure)}")
+    logger.info("Number of slides content generated: %d", len(slides_content))
+    logger.info("Expected number of slides: %d", len(SLIDES_STRUCTURE))
 
-    # Ensure slides_content aligns with slides_structure
-    if len(slides_content) != len(slides_structure):
+    if len(slides_content) != len(SLIDES_STRUCTURE):
         raise ValueError("Generated content does not match the number of defined slides")
 
     return slides_content
 
 
-def adjust_slide_content(slide, title, content, resize_title=True, resize_content=True):
-    # Adjust title
+def adjust_slide_content(
+    slide,
+    title: str,
+    content: str,
+    resize_title: bool = True,
+    resize_content: bool = True
+) -> None:
+    """Adjust slide content positioning and sizing.
+
+    Args:
+        slide: The PowerPoint slide object.
+        title: The slide title.
+        content: The slide content.
+        resize_title: Whether to resize the title placeholder.
+        resize_content: Whether to resize the content placeholder.
+    """
     if resize_title:
         title_placeholder = slide.shapes.title
         if title_placeholder:
-            title_placeholder.top = Inches(1.5)  # Move title to the top
-            title_placeholder.width = Inches(10)  # Set width
-            title_placeholder.height = Inches(1.5)  # Set height
+            title_placeholder.top = Inches(1.5)
+            title_placeholder.width = Inches(10)
+            title_placeholder.height = Inches(1.5)
 
-    # Adjust content
     if resize_content:
         content_placeholder = None
         for shape in slide.placeholders:
-            if shape.placeholder_format.idx == 1:  # Typically the content placeholder
+            if shape.placeholder_format.idx == 1:
                 content_placeholder = shape
                 break
         if content_placeholder:
-            content_placeholder.top = Inches(1.5)  # Move content box down
-            content_placeholder.left = Inches(0.5)  # Adjust left margin
-            content_placeholder.width = Inches(9)  # Adjust width
-            content_placeholder.height = Inches(5.5)  # Adjust height
+            content_placeholder.top = Inches(1.5)
+            content_placeholder.left = Inches(0.5)
+            content_placeholder.width = Inches(9)
+            content_placeholder.height = Inches(5.5)
 
-    insert_content(slide, title, content)
+    insert_content(slide, title, content, text_placeholder_idx=1)
 
-def create_slide(prs, layout_name):
-    layout_index = layout_mapping.get(layout_name)
+
+def create_slide(prs: Presentation, layout_name: str):
+    """Create a new slide with the specified layout.
+
+    Args:
+        prs: The PowerPoint presentation object.
+        layout_name: The name of the layout to use.
+
+    Returns:
+        The new slide object.
+
+    Raises:
+        ValueError: If layout name is not found.
+    """
+    layout_index = LAYOUT_MAPPING.get(layout_name)
     if layout_index is None:
         raise ValueError(f"No layout found for {layout_name}")
     slide_layout = prs.slide_layouts[layout_index]
     return prs.slides.add_slide(slide_layout)
 
-"""
-def insert_content(slide, title, content):
-    # Set title
-    try:
-        title_placeholder = slide.shapes.title
-        title_placeholder.text = title
-    except AttributeError:
-        print("Warning: No title placeholder found. Skipping title.")
 
-    # Find the content placeholder and set content
-    try:
-        content_placeholder = None
-        for shape in slide.placeholders:
-            if shape.placeholder_format.idx == 1:  # Typically the content placeholder
-                content_placeholder = shape
-                break
-        if content_placeholder:
-            text_frame = content_placeholder.text_frame
-            text_frame.clear()  # Clear existing content
-            p = text_frame.add_paragraph()
-            p.text = content
-            p.font.size = Pt(16)  # Adjust the font size as needed
-            # Adjust position if this is a slide with an image
-            if slide.slide_layout == layout_mapping["one_column_text"]:
-                content_placeholder.top = Inches(0.5)  # Move text box up
-                content_placeholder.width = Inches(4.5)  # Adjust width for left column
-        else:
-            print("Warning: No content placeholder found. Skipping content insertion.")
-    except Exception as e:
-        print(f"Error while inserting content: {str(e)}")
-"""
+def insert_content(
+    slide,
+    title: str,
+    content: str,
+    text_placeholder_idx: int,
+    font_size: int = DEFAULT_FONT_SIZE,
+    enlarge_text_box: bool = False,
+    image_slide: bool = False,
+    move_title_up: bool = False
+) -> None:
+    """Insert title and content into a slide.
 
-def insert_content(slide, title, content, text_placeholder_idx, font_size=10, enlarge_text_box=False, image_slide=False, move_title_up=False):
+    Args:
+        slide: The PowerPoint slide object.
+        title: The slide title.
+        content: The slide content.
+        text_placeholder_idx: Index of the text placeholder.
+        font_size: Font size in points.
+        enlarge_text_box: Whether to enlarge the text box.
+        image_slide: Whether this is a slide with an image.
+        move_title_up: Whether to move the title up.
+    """
     try:
         title_placeholder = slide.shapes.title
         if title_placeholder:
             title_placeholder.text = title
             if move_title_up:
-                title_placeholder.top = Inches(0.5)  # Move title up
+                title_placeholder.top = Inches(0.5)
     except AttributeError:
-        print("Warning: No title placeholder found. Skipping title.")
+        logger.warning("No title placeholder found. Skipping title.")
 
     try:
         content_placeholder = None
@@ -204,51 +280,75 @@ def insert_content(slide, title, content, text_placeholder_idx, font_size=10, en
 
         if content_placeholder:
             text_frame = content_placeholder.text_frame
-            text_frame.clear()  # Clear any existing content
+            text_frame.clear()
 
-            # Add new paragraphs
             for paragraph in content.split('\n'):
                 p = text_frame.add_paragraph()
                 p.text = paragraph
-                p.font.size = Pt(font_size)  # Adjust font size as necessary
+                p.font.size = Pt(font_size)
 
-            # Adjust text box width if it's a slide with an image
             if image_slide:
-                content_placeholder.width = Inches(4.5)  # Reduce width to avoid overlap with image
+                content_placeholder.width = Inches(4.5)
         else:
-            print(f"Warning: No content placeholder found for text insertion with index {text_placeholder_idx}.")
+            logger.warning(
+                "No content placeholder found for text insertion with index %d.",
+                text_placeholder_idx
+            )
     except Exception as e:
-        print(f"Error setting text: {str(e)}")
+        logger.error("Error setting text: %s", e)
 
-def add_image_to_slide(slide, image_path):
+
+def add_image_to_slide(slide, image_path: str) -> None:
+    """Add an image to a slide positioned on the right side.
+
+    Args:
+        slide: The PowerPoint slide object.
+        image_path: Path to the image file.
+    """
     try:
         image = Image.open(image_path)
         image_width, image_height = image.size
 
-        image_width_cm = image_width * 0.0264583333
-        image_height_cm = image_height * 0.0264583333
+        image_width_cm = image_width * PIXELS_TO_CM
+        image_height_cm = image_height * PIXELS_TO_CM
 
-        slide_width_cm = 24.4
-        slide_height_cm = 19.05
-
-        # Resize the image to fit well on the right side, taking up no more than one-third of the slide
-        while image_width_cm > slide_width_cm / 3 or image_height_cm > slide_height_cm:
+        while image_width_cm > SLIDE_WIDTH_CM / 3 or image_height_cm > SLIDE_HEIGHT_CM:
             image_width_cm *= 0.5
             image_height_cm *= 0.5
 
-        top = Cm(2.0)
-        left = Cm(slide_width_cm - image_width_cm - 1.0)  # Adjust to position the image to the right side
+        top = Cm(IMAGE_TOP_CM)
+        left = Cm(SLIDE_WIDTH_CM - image_width_cm - IMAGE_RIGHT_MARGIN_CM)
         height = Cm(image_height_cm)
         width = Cm(image_width_cm)
 
         slide.shapes.add_picture(image_path, left=left, top=top, width=width, height=height)
     except Exception as e:
-        print(f"Error adding image to slide: {str(e)}")
+        logger.error("Error adding image to slide: %s", e)
 
 
-def regenerate_slide_6_content(description, max_retries=3):
+@retry(
+    retry=retry_if_exception_type((RateLimitError, APIError)),
+    stop=stop_after_attempt(MAX_RETRIES),
+    wait=wait_exponential(multiplier=RETRY_MULTIPLIER, min=RETRY_INITIAL_WAIT, max=RETRY_MAX_WAIT),
+    before_sleep=lambda retry_state: logger.warning(
+        "Retrying slide 6 regeneration (attempt %d/%d)",
+        retry_state.attempt_number, MAX_RETRIES
+    )
+)
+def regenerate_slide_6_content(description: str, max_retries: int = MAX_RETRIES) -> str:
+    """Regenerate content for slide 6 (Recommendations) if initial generation failed.
+
+    Args:
+        description: The presentation description.
+        max_retries: Maximum number of regeneration attempts.
+
+    Returns:
+        The regenerated content for slide 6.
+
+    Raises:
+        ValueError: If content cannot be regenerated with exactly 3 key points.
+    """
     for attempt in range(max_retries):
-        # Regenerate content specifically for slide 6
         prompt = (
             f"You are an expert in creating professional presentations in the style of McKinsey, BCG, or Bain (MBB). "
             f"Generate concise, impactful content for the 'Recommendations' slide based on the following description:\n\n"
@@ -259,52 +359,72 @@ def regenerate_slide_6_content(description, max_retries=3):
             "Do not include the word recommendation in each point."
         )
 
-        response = llm.invoke(prompt)
-        content = response.content.strip()
+        content = invoke_llm(prompt)
 
         key_points = content.split('\n\n')
-        if len(key_points) == 3:
+        if len(key_points) == RECOMMENDATIONS_KEY_POINTS:
             return content
         else:
-            print(f"Regeneration attempt {attempt + 1} failed. Retrying...")
+            logger.warning("Regeneration attempt %d failed. Retrying...", attempt + 1)
 
-    raise ValueError("Regenerated content for slide 6 does not contain exactly 3 key points after multiple attempts")
-def generate_and_save_presentation(description, template_path, output_path):
+    raise ValueError(
+        f"Regenerated content for slide 6 does not contain exactly {RECOMMENDATIONS_KEY_POINTS} "
+        "key points after multiple attempts"
+    )
+
+
+def generate_and_save_presentation(
+    description: str,
+    template_path: str,
+    output_path: str
+) -> None:
+    """Generate a complete presentation and save it to a file.
+
+    Args:
+        description: The presentation description/topic.
+        template_path: Path to the PowerPoint template file.
+        output_path: Path where the generated presentation should be saved.
+
+    Raises:
+        ValueError: If template doesn't have enough slides or content generation fails.
+    """
     try:
         slide_content = generate_slide_content(description)
-        # Check the content of slide 6
         key_points = slide_content[5].split('\n\n')
-        if len(key_points) != 3:
-            raise ValueError("Generated content for slide 6 does not contain exactly 3 key points")
+        if len(key_points) != RECOMMENDATIONS_KEY_POINTS:
+            raise ValueError(
+                f"Generated content for slide 6 does not contain exactly "
+                f"{RECOMMENDATIONS_KEY_POINTS} key points"
+            )
     except ValueError as e:
-        if "slide 6 does not contain exactly 3 key points" in str(e):
-            print("Error in generating content for slide 6. Regenerating...")
+        if "slide 6 does not contain exactly" in str(e):
+            logger.warning("Error in generating content for slide 6. Regenerating...")
             try:
                 slide_6_content = regenerate_slide_6_content(description)
                 slide_content[5] = slide_6_content
             except ValueError as regen_error:
-                print(str(regen_error))
-                return
+                logger.error(str(regen_error))
+                raise
         else:
-            raise e
+            raise
+
     prs = Presentation(template_path)
 
-    # Ensure there are enough slides in the template
-    if len(prs.slides) < len(slides_structure):
+    if len(prs.slides) < len(SLIDES_STRUCTURE):
         raise ValueError("The template does not contain enough slides to match the structure")
 
-    slides_with_images = []  # Add indices of slides that should have images here
-    slides_to_move_title_up = []  # Indices of slides where title should be moved up
+    slides_with_images: List[int] = []
+    slides_to_move_title_up: List[int] = []
 
     template_type = "template-2" if "template-2" in template_path else "template-1"
 
     for i, slide in enumerate(prs.slides):
-        if i < len(slides_structure):
-            title = description if i == 0 else slides_structure[i]["title"]
+        if i < len(SLIDES_STRUCTURE):
+            title = description if i == 0 else SLIDES_STRUCTURE[i]["title"]
             content = slide_content[i]
 
-            if i == 5:  # Special case for slide 6 (index 5) with multiple key points
-                key_points = content.split('\n\n')  # Assuming key points are separated by double newlines
+            if i == 5:  # Recommendations slide
+                key_points = content.split('\n\n')
 
                 if template_type == "template-2":
                     body_indices = [1, 2, 3]
@@ -319,14 +439,25 @@ def generate_and_save_presentation(description, template_path, output_path):
                     else:
                         heading = key_point
                         body = ""
-                    insert_content(slide, title, heading, text_placeholder_idx=heading_indices[j], font_size=10,
-                                   enlarge_text_box=False)
-                    insert_content(slide, title, body, text_placeholder_idx=body_indices[j], font_size=9,
-                                   enlarge_text_box=True)
-            elif i == 7:  # Special case for slide 8 (index 7) with two examples
-                examples = content.split('\n\n')  # Assuming examples are separated by double newlines
-                if len(examples) != 2:
-                    raise ValueError("Generated content for slide 8 does not contain exactly 2 examples")
+                    insert_content(
+                        slide, title, heading,
+                        text_placeholder_idx=heading_indices[j],
+                        font_size=DEFAULT_FONT_SIZE,
+                        enlarge_text_box=False
+                    )
+                    insert_content(
+                        slide, title, body,
+                        text_placeholder_idx=body_indices[j],
+                        font_size=SMALL_FONT_SIZE,
+                        enlarge_text_box=True
+                    )
+            elif i == 7:  # Examples slide
+                examples = content.split('\n\n')
+                if len(examples) != EXAMPLES_COUNT:
+                    raise ValueError(
+                        f"Generated content for slide 8 does not contain exactly "
+                        f"{EXAMPLES_COUNT} examples"
+                    )
                 if template_type == "template-2":
                     heading_indices = [3, 4]
                     body_indices = [1, 2]
@@ -340,45 +471,59 @@ def generate_and_save_presentation(description, template_path, output_path):
                     else:
                         heading = example
                         body = ""
-                    insert_content(slide, title, heading, text_placeholder_idx=heading_indices[j], font_size=10,
-                                   enlarge_text_box=False)
-                    insert_content(slide, title, body, text_placeholder_idx=body_indices[j], font_size=9,
-                                   enlarge_text_box=True)
-            elif i in [8, 9, 10]:  # Special case for slides 9, 10, and 11 to replace content
+                    insert_content(
+                        slide, title, heading,
+                        text_placeholder_idx=heading_indices[j],
+                        font_size=DEFAULT_FONT_SIZE,
+                        enlarge_text_box=False
+                    )
+                    insert_content(
+                        slide, title, body,
+                        text_placeholder_idx=body_indices[j],
+                        font_size=SMALL_FONT_SIZE,
+                        enlarge_text_box=True
+                    )
+            elif i in [8, 9, 10]:  # Data, Benefits, Risks slides
                 title_placeholder = slide.shapes.title
                 if title_placeholder:
-                    title_placeholder.text = slides_structure[i]["title"]
-                # Clear existing content
+                    title_placeholder.text = SLIDES_STRUCTURE[i]["title"]
                 for shape in slide.placeholders:
                     if shape.placeholder_format.idx != title_placeholder.placeholder_format.idx:
                         shape.text = ""
-                # Insert new content
-                insert_content(slide, slides_structure[i]["title"], content, text_placeholder_idx=1, font_size=10,
-                               enlarge_text_box=True)
+                insert_content(
+                    slide, SLIDES_STRUCTURE[i]["title"], content,
+                    text_placeholder_idx=1,
+                    font_size=DEFAULT_FONT_SIZE,
+                    enlarge_text_box=True
+                )
             else:
-                # Determine the correct text placeholder index
                 if template_type == "template-2":
                     text_placeholder_idx = 1
                 else:
-                    if i in [0, 8, 9, 10]:  # For slides 1, 9, 10, 11
+                    if i in [0, 8, 9, 10]:
                         text_placeholder_idx = 1
                     else:
                         text_placeholder_idx = 3
                 move_title_up = i in slides_to_move_title_up
 
                 if i in slides_with_images:
-                    insert_content(slide, title, content, text_placeholder_idx, image_slide=True, move_title_up=move_title_up)
+                    insert_content(
+                        slide, title, content, text_placeholder_idx,
+                        image_slide=True, move_title_up=move_title_up
+                    )
                     module = {"topic": title, "key_points": content.split('\n')}
                     module = generate_cover(i, module)
                     if module["filename"]:
                         add_image_to_slide(slide, module["filename"])
                 else:
-                    insert_content(slide, title, content, text_placeholder_idx, enlarge_text_box=True, move_title_up=move_title_up)
+                    insert_content(
+                        slide, title, content, text_placeholder_idx,
+                        enlarge_text_box=True, move_title_up=move_title_up
+                    )
 
-        print(f"Inserted content for slide {i + 1}")
+        logger.info("Inserted content for slide %d", i + 1)
 
-    # Remove the specified slides
-    indices_to_remove = list(range(12, len(prs.slides)))
+    indices_to_remove = list(range(MAX_SLIDES, len(prs.slides)))
     prs = remove_unwanted_slides(prs, indices_to_remove)
     prs.save(output_path)
-    print(f"Presentation saved to {output_path}")
+    logger.info("Presentation saved to %s", output_path)

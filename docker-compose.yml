@@ -3,13 +3,23 @@ version: '3.8'
 services:
   decksmith:
     build:
-      context: .  # Adjust path relative to the docker-compose.yml
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8502:8502"
     environment:
-      -
+      - TOKENIZERS_PARALLELISM=false
     env_file:
       - .env
     volumes:
-      -
-    command: streamlit run main.py
+      - ./saved_deck:/app/saved_deck
+      - ./data:/app/data
+      - ./images:/app/images
+    command: streamlit run main.py --server.port=8502 --server.address=0.0.0.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8502/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

@@ -1,19 +1,27 @@
-from langchain_openai import AzureOpenAI, AzureChatOpenAI
-from langchain.chains import ConversationChain
-from vector_db import search_vector_db
-from utils import clean_response
+"""Chatbot module for DeckSmith with conversation and email capabilities."""
+
+import logging
 import os
-from dotenv import load_dotenv
-from tools import use_tool
 import re
-# Load environment variables from .env file
+from typing import Any, Dict, List, Optional
+
+import streamlit as st
+from dotenv import load_dotenv
+from langchain.chains import ConversationChain
+from langchain_openai import AzureChatOpenAI
+
+from tools import EmailSendError, EmailValidationError, use_tool
+from utils import clean_response
+from vector_db import search_vector_db
+
 load_dotenv()
 
-# Initialize the Azure OpenAI client
-azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
-azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-azure_openai_api_version = "2024-02-15-preview"
-azure_openai_deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+logger = logging.getLogger(__name__)
+
+azure_openai_api_key: Optional[str] = os.getenv("AZURE_OPENAI_API_KEY")
+azure_openai_endpoint: Optional[str] = os.getenv("AZURE_OPENAI_ENDPOINT")
+azure_openai_api_version: str = "2024-02-15-preview"
+azure_openai_deployment_name: Optional[str] = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
 
 llm = AzureChatOpenAI(
     api_key=azure_openai_api_key,
@@ -24,66 +32,102 @@ llm = AzureChatOpenAI(
 
 conversation_chain = ConversationChain(llm=llm)
 
-# State to remember if an email should be sent and awaiting email address
-email_request_state = {
-    "awaiting_email": False,
-    "email_subject": "",
-    "email_body": ""
-}
 
-# List to store chat history
-chat_history = []
+def get_or_init_chat_state() -> Dict[str, Any]:
+    """Initialize and return the chat state from Streamlit session state.
 
-def get_chatbot_response(user_input, prompt=None):
-    # Check if the chatbot is awaiting an email address
+    Returns:
+        Dictionary containing email_request_state and chat_history.
+    """
+    if "email_request_state" not in st.session_state:
+        st.session_state.email_request_state = {
+            "awaiting_email": False,
+            "email_subject": "",
+            "email_body": ""
+        }
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    return {
+        "email_request_state": st.session_state.email_request_state,
+        "chat_history": st.session_state.chat_history
+    }
+
+
+def get_chatbot_response(user_input: str, prompt: Optional[str] = None) -> str:
+    """Process user input and return a chatbot response.
+
+    Args:
+        user_input: The user's input message.
+        prompt: Optional system prompt to prepend to the conversation.
+
+    Returns:
+        The chatbot's response string.
+    """
+    chat_state = get_or_init_chat_state()
+    email_request_state = chat_state["email_request_state"]
+    chat_history: List[str] = chat_state["chat_history"]
+
     if email_request_state["awaiting_email"]:
         email_address = user_input.strip()
-        chat_history_str = "\n\n".join(chat_history)
-        use_tool("send_email", email_request_state["email_subject"], email_request_state["email_body"], email_address)
-        email_request_state["awaiting_email"] = False
-        return f"Email sent to {email_address}"
+        try:
+            use_tool(
+                "send_email",
+                email_request_state["email_subject"],
+                email_request_state["email_body"],
+                email_address
+            )
+            email_request_state["awaiting_email"] = False
+            logger.info("Email sent to %s", email_address)
+            return f"Email sent to {email_address}"
+        except (EmailValidationError, EmailSendError) as e:
+            logger.error("Failed to send email: %s", e)
+            email_request_state["awaiting_email"] = False
+            return f"Failed to send email: {e}"
 
-    # Retrieve relevant information from vector store
     relevant_texts = search_vector_db(user_input)
 
-    # Combine retrieved texts, prompt, and user input to provide context for answering the question
     combined_input = ""
     if prompt:
         combined_input += f"{prompt}\n\n"
 
     if relevant_texts:
-        # Combine retrieved texts and user input to provide context for answering the question
         context = " ".join(relevant_texts)
-        combined_input = f"Based on the following information, answer the question concisely:\n\n{context}\n\nQuestion: {user_input}"
+        combined_input = (
+            f"Based on the following information, answer the question concisely:\n\n"
+            f"{context}\n\nQuestion: {user_input}"
+        )
     else:
         combined_input += user_input
 
-    # Generate response using LLM
+    logger.debug("Invoking conversation chain with input length: %d", len(combined_input))
     raw_response = conversation_chain.invoke(combined_input)
 
-    # Assume the response is a dictionary with 'response' key
     if isinstance(raw_response, dict) and 'response' in raw_response:
         response_content = raw_response['response']
     else:
         response_content = raw_response
 
-    # Clean and format the response
     formatted_response = clean_response(response_content)
 
-    # Add the user input and response to the chat history
     chat_history.append(f"You: {user_input}")
     chat_history.append(f"Bot: {formatted_response}")
 
-    # Check if the user requested to send an email
     email_phrases = ["send email", "email me the chat", "email this to me"]
     if any(phrase in user_input.lower() for phrase in email_phrases):
-        # Extract email address if provided in the input
         email_match = re.search(r'[\w\.-]+@[\w\.-]+', user_input)
         if email_match:
             email_address = email_match.group(0)
             chat_history_str = "\n\n".join(chat_history)
-            use_tool("send_email", "Your Chat Information", chat_history_str, email_address)
-            return f"Email sent to {email_address}"
+            try:
+                use_tool("send_email", "Your Chat Information", chat_history_str, email_address)
+                logger.info("Email sent to %s", email_address)
+                return f"Email sent to {email_address}"
+            except (EmailValidationError, EmailSendError) as e:
+                logger.error("Failed to send email: %s", e)
+                return f"Failed to send email: {e}"
+
         email_request_state["awaiting_email"] = True
         email_request_state["email_subject"] = "Your Chat Information"
         email_request_state["email_body"] = formatted_response

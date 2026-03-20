@@ -1,23 +1,38 @@
-def clean_response(response):
-    # Extract the 'response' field if it's a dictionary
+"""Utility functions for DeckSmith."""
+
+from typing import Any, Dict, Union
+
+
+def clean_response(response: Union[str, Dict[str, Any]]) -> str:
+    """Clean and format a chatbot response for display.
+
+    Args:
+        response: The raw response, either a string or dictionary with 'response' key.
+
+    Returns:
+        A cleaned and formatted response string.
+    """
     if isinstance(response, dict):
         response = response.get('response', '')
 
-    # Ensure response is a string
     if not isinstance(response, str):
-       response = str(response)
+        response = str(response)
 
-    # Remove unwanted characters
     response = response.replace("{", "").replace("}", "").replace("\"", "")
 
-    # Remove special characters and unnecessary line breaks
     response = response.replace("\n\n", "\n")
-    response = response.replace("•", "-")
-    response = response.replace("➢", "-")
     response = response.replace("  ", " ")
-    response = response.replace("{", "").replace("}", "").replace("\"", "")
 
-    # Add Markdown formatting
+    replacements = {
+        "\u2022": "-",
+        "\u27a2": "-",
+        "\u2023": "-",
+        "\u25aa": "-",
+        "\u25ab": "-",
+    }
+    for old, new in replacements.items():
+        response = response.replace(old, new)
+
     lines = response.split("\n")
     formatted_lines = []
     for line in lines:
